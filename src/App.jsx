@@ -14,6 +14,89 @@ const PAR = 3;
 const APP_NAME = "⛳ Northfields Scorecard";
 const FRIDAY_PLAYERS = ["Jeff", "Nado", "Wizt", "Minnis", "Joe", "Saab"];
 const ADMIN_PIN = "0523";
+const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY || "";
+
+async function claudeCall(system, messages, maxTokens = 400) {
+  const headers = {
+    "Content-Type": "application/json",
+    "x-api-key": ANTHROPIC_KEY,
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+  };
+  const body = { model: "claude-haiku-4-5-20251001", max_tokens: maxTokens, messages };
+  if (system) body.system = system;
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST", headers, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  return data.content?.[0]?.text || "";
+}
+
+function buildSynopsisPrompt(mode, round, history, players) {
+  function fmtO(v) { return v > 0 ? `+${v}` : v === 0 ? "E" : `${v}`; }
+  if (mode === "friday") {
+    const roundPlayers = players || Object.keys(round.player_data);
+    const totals = Object.fromEntries(roundPlayers.map(p => [p, round.player_data[p].scores.reduce((a,b)=>a+b,0)]));
+    const minTotal = Math.min(...Object.values(totals));
+    const maxTotal = Math.max(...Object.values(totals));
+    const winners = roundPlayers.filter(p => totals[p] === minTotal);
+    const lastPlace = roundPlayers.filter(p => totals[p] === maxTotal);
+    const scorecards = roundPlayers.map(p => {
+      const pd = round.player_data[p];
+      const over = totals[p] - 36;
+      const birdies = pd.scores.filter(s => s <= 2).length;
+      const threePutts = pd.threePutts ? pd.threePutts.filter(Boolean).length : 0;
+      const girs = pd.girs.filter(Boolean).length;
+      return `${p}: ${fmtO(over)} (${totals[p]} strokes) | ${birdies} birdies | ${girs} GIR | ${threePutts} 3-putts`;
+    }).join("\n");
+    const LABELS = ["6","Long 7","7","8","8>9","9","1","2","3","4","5","Short 5"];
+    const moments = [];
+    for (let i = 0; i < 12; i++) {
+      const holeScores = Object.fromEntries(roundPlayers.map(p => [p, round.player_data[p].scores[i]]));
+      const holeGirs = Object.fromEntries(roundPlayers.map(p => [p, round.player_data[p].girs[i]]));
+      const birdiers = roundPlayers.filter(p => holeScores[p] <= 2);
+      if (birdiers.length > 0) {
+        const chipIns = birdiers.filter(p => !holeGirs[p]);
+        if (chipIns.length > 0) moments.push(`${chipIns.join(" & ")} chipped in for birdie on ${LABELS[i]}`);
+        else moments.push(`${birdiers.join(" & ")} birdied ${LABELS[i]}`);
+      }
+      const blowups = roundPlayers.filter(p => holeScores[p] >= 5);
+      if (blowups.length > 0) moments.push(`${blowups.join(" & ")} made ${blowups.map(p=>holeScores[p]).join("/")} on ${LABELS[i]}`);
+    }
+    const dateStr = round.date ? new Date(round.date).toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"}) : "today";
+    return `You are a golf commentator recapping a casual Friday par-3 league at Northfields Golf Course (12 holes, 3 are "bullshit holes": Long 7, 8>9, Short 5). Write exactly 2 paragraphs: who won and how, then 2-3 specific moments. Sarcastic but warm tone, like a friend. No headers or bullets.\n\nDate: ${dateStr}\nWinner(s): ${winners.join(" & ")} at ${fmtO(minTotal-36)}\nLast: ${lastPlace.join(" & ")} at ${fmtO(maxTotal-36)}\nScorecards:\n${scorecards}\nMoments: ${moments.length ? moments.join("; ") : "none — invent plausible ones"}`;
+  } else if (mode === "standard") {
+    const { player, scores, girs, course } = round;
+    const total = scores.reduce((a,b)=>a+b,0);
+    const par = scores.length * 3;
+    const over = total - par;
+    const birdies = scores.filter(s=>s<=2).length;
+    const bogeys = scores.filter(s=>s===4).length;
+    const doubles = scores.filter(s=>s>=5).length;
+    const girCount = girs.filter(Boolean).length;
+    let hist = "";
+    if (history && history.length > 0) {
+      const recent = history.slice(0,5);
+      const avg = recent.reduce((s,r)=>s+r.scores.reduce((a,b)=>a+b,0),0)/recent.length;
+      hist = ` Their last ${recent.length} rounds avg: ${fmtO(Math.round(avg - recent[0].scores.length*3))}.`;
+    }
+    return `You are a golf caddie giving a post-round debrief for ${player} at Northfields (par-3). Write exactly 2 short paragraphs: what went well, what to work on. Honest, coach-y tone. No headers or bullets.\n\nScore: ${fmtO(over)} (${total} strokes) | Birdies: ${birdies} | Bogeys: ${bogeys} | Doubles+: ${doubles} | GIR: ${girCount}/${scores.length}${hist}`;
+  } else if (mode === "practice") {
+    const { player, ball_data, balls_per_hole, course } = round;
+    const bph = balls_per_hole || 5;
+    const allScores = ball_data.map(h=>h.scores).flat();
+    const avg = (allScores.reduce((a,b)=>a+b,0)/allScores.length).toFixed(2);
+    const birdies = allScores.filter(s=>s<=2).length;
+    const doubles = allScores.filter(s=>s>=5).length;
+    const girCount = ball_data.map(h=>h.girs).flat().filter(Boolean).length;
+    const holeAvgs = ball_data.map((h,i)=>({hole:i+1,avg:h.scores.reduce((a,b)=>a+b,0)/bph}));
+    const best = holeAvgs.reduce((a,b)=>a.avg<b.avg?a:b);
+    const worst = holeAvgs.reduce((a,b)=>a.avg>b.avg?a:b);
+    return `You are a golf instructor debriefing a multi-ball practice session for ${player} at Northfields (par-3). Write exactly 2 short paragraphs: what the session revealed, what to focus on next. Constructive coaching tone. No headers or bullets.\n\nAvg per ball: ${avg} | Birdies: ${birdies}/${allScores.length} | Doubles+: ${doubles}/${allScores.length} | GIR: ${girCount}/${allScores.length} | Best hole: ${best.hole} (${best.avg.toFixed(2)}) | Worst: ${worst.hole} (${worst.avg.toFixed(2)})`;
+  }
+  return "Summarize this golf round briefly.";
+}
+
 
 // Original 9 holes
 const ORIGINAL_9 = [1,2,3,4,5,6,7,8,9];
@@ -995,13 +1078,8 @@ function StandardDetail({ round, allRounds, onBack, onDelete, onEdit }) {
   useEffect(() => {
     if (round.synopsis) { setSynopsis(round.synopsis); setSynopsisLoading(false); return; }
     const history = (allRounds || []).filter(r => r.id !== round.id && r.player_name === round.player_name).slice(0, 5);
-    fetch("/api/synopsis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "standard", round: { ...round, player: round.player_name }, history }),
-    })
-      .then(r => r.json())
-      .then(d => { setSynopsis(d.synopsis || null); setSynopsisLoading(false); })
+    claudeCall(null, [{ role: "user", content: buildSynopsisPrompt("standard", { ...round, player: round.player_name }, history) }], 400)
+      .then(text => { setSynopsis(text || null); setSynopsisLoading(false); })
       .catch(() => setSynopsisLoading(false));
   }, [round.id]);
 
@@ -1865,13 +1943,8 @@ function PracticeDetail({ round, allRounds, onBack, onDelete, onEdit }) {
 
   useEffect(() => {
     const history = (allRounds || []).filter(r => r.id !== round.id).slice(0, 5);
-    fetch("/api/synopsis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "practice", round: { ...round, player: round.player_name }, history }),
-    })
-      .then(r => r.json())
-      .then(d => { setSynopsis(d.synopsis || null); setSynopsisLoading(false); })
+    claudeCall(null, [{ role: "user", content: buildSynopsisPrompt("practice", { ...round, player: round.player_name }, history) }], 400)
+      .then(text => { setSynopsis(text || null); setSynopsisLoading(false); })
       .catch(() => setSynopsisLoading(false));
   }, [round.id]);
 
@@ -2316,13 +2389,8 @@ function FridayDetail({ round, allRounds, onBack, onDelete }) {
   const [showCaddie, setShowCaddie] = useState(false);
 
   useEffect(() => {
-    fetch("/api/synopsis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "friday", round, players }),
-    })
-      .then(r => r.json())
-      .then(d => { setSynopsis(d.synopsis || null); setSynopsisLoading(false); })
+    claudeCall(null, [{ role: "user", content: buildSynopsisPrompt("friday", round, null, players) }], 400)
+      .then(text => { setSynopsis(text || null); setSynopsisLoading(false); })
       .catch(() => setSynopsisLoading(false));
   }, [round.id]);
 
@@ -2661,13 +2729,21 @@ function CaddieChat({ context, onClose }) {
     setInput("");
     setLoading(true);
     try {
-      const res = await fetch("/api/caddie", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages, context }),
-      });
-      const data = await res.json();
-      setMessages(m => [...m, { role: "assistant", content: data.reply || "Sorry, I couldn't get a response." }]);
+      const mode = context?.mode || "home";
+      let system = "You are a helpful golf caddie AI for Northfields Golf Course (par-3 layout). Be concise and conversational.";
+      if (mode === "standard") {
+        const p = context.player || "the player";
+        const rounds = (context.standardRounds || []).slice(0,10);
+        const hist = rounds.map(r => { const t=r.scores?.reduce((a,b)=>a+b,0)||0; const o=t-r.scores?.length*3; return `${r.date?new Date(r.date).toLocaleDateString("en-US",{month:"short",day:"numeric"}):"?"}: ${o>=0?"+":""}${o}`; }).join(", ");
+        system = `You are a golf caddie AI for ${p} at Northfields Golf Course (par-3). Recent rounds: ${hist||"none"}. Be specific, use their stats, keep a friendly coaching tone.`;
+      } else if (mode === "practice") {
+        const p = context.player || "the player";
+        system = `You are a golf instructor AI for ${p} at Northfields Golf Course (par-3 multi-ball practice format). Be specific and constructive.`;
+      } else if (mode === "friday_group") {
+        system = `You are a golf caddie AI for the Northfields Friday League (par-3, 12 holes, players: Jeff, Nado, Wizt, Minnis, Joe, Saab). Be fun and a little sarcastic like a friend who knows golf.`;
+      }
+      const reply = await claudeCall(system, newMessages.map(m=>({role:m.role,content:m.content})), 500);
+      setMessages(m => [...m, { role: "assistant", content: reply || "Sorry, I couldn't get a response." }]);
     } catch {
       setMessages(m => [...m, { role: "assistant", content: "Connection error. Try again." }]);
     }
