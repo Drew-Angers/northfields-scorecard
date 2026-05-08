@@ -1,4 +1,4 @@
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const { messages, context } = req.body;
@@ -6,7 +6,6 @@ module.exports = async function handler(req, res) {
 
   const mode = context?.mode || "home";
 
-  // Build a system prompt based on context
   let systemPrompt = "";
 
   if (mode === "home") {
@@ -91,7 +90,6 @@ Recent Friday rounds (most recent first):
 ${historyText}`;
   }
 
-  // Format messages for Anthropic API
   const apiMessages = messages.map(m => ({
     role: m.role,
     content: m.content,
@@ -120,4 +118,4 @@ ${historyText}`;
     console.error("Caddie error:", err);
     res.status(500).json({ error: "Failed to get caddie response" });
   }
-};
+}

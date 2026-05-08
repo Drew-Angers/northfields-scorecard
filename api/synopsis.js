@@ -1,4 +1,4 @@
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const { mode, round, history, players } = req.body;
@@ -37,14 +37,12 @@ module.exports = async function handler(req, res) {
       const holeLabel = EXPANDED_12_LABELS[i];
       const holeScores = Object.fromEntries(roundPlayers.map(p => [p, round.player_data[p].scores[i]]));
       const holeGirs = Object.fromEntries(roundPlayers.map(p => [p, round.player_data[p].girs[i]]));
-      const minHoleScore = Math.min(...Object.values(holeScores));
 
       // Birdies (score of 2 on par 3)
       const birdiers = roundPlayers.filter(p => holeScores[p] <= 2);
       if (birdiers.length > 0) {
-        const chipIns = birdiers.filter(p => !holeGirs[p]); // birdie without GIR = chip-in or putt from off green
+        const chipIns = birdiers.filter(p => !holeGirs[p]);
         if (chipIns.length > 0) {
-          // Last hole chip-in is especially dramatic
           if (i === 11 || i === 10) {
             dramaticMoments.push(`DRAMATIC: ${chipIns.join(" & ")} chipped in for birdie on hole ${holeLabel} (no GIR) — late heroics`);
           } else {
@@ -89,7 +87,6 @@ ${dramaticMoments.length > 0 ? dramaticMoments.join("\n") : "No standout moments
 Write only the two paragraphs, no headers, no bullet points.`;
 
   } else if (mode === "standard") {
-    // Standard round — individual player synopsis with history context
     const { player, scores, girs, putts, course } = round;
     const totalHoles = scores.length;
     const par = totalHoles * 3;
@@ -108,7 +105,7 @@ Write only the two paragraphs, no headers, no bullet points.`;
       historyContext = `\nPlayer's last ${recent.length} rounds avg: ${avgOver >= 0 ? "+" : ""}${avgOver.toFixed(1)} per round. Today's score vs their average: ${overUnder - avgOver >= 0 ? "+" : ""}${(overUnder - avgOver).toFixed(1)}.`;
     }
 
-    prompt = `You are a golf caddie giving a brief post-round debrief for a player at Northfields Golf Course (par-3 layout). 
+    prompt = `You are a golf caddie giving a brief post-round debrief for a player at Northfields Golf Course (par-3 layout).
 
 Write exactly 2 short paragraphs: what went well, and what to work on. Be honest but not brutal. Reference specific stats from this round. Use a conversational, coach-y tone — like a good playing partner, not a stat robot.
 
@@ -122,7 +119,6 @@ ${historyContext}
 Write only the two paragraphs. No headers, no bullet points.`;
 
   } else if (mode === "practice") {
-    // Practice round synopsis
     const { player, ball_data, balls_per_hole, course } = round;
     const bph = balls_per_hole || 5;
     const allScores = ball_data.map(h => h.scores).flat();
@@ -133,7 +129,6 @@ Write only the two paragraphs. No headers, no bullet points.`;
     const girCount = ball_data.map(h => h.girs).flat().filter(Boolean).length;
     const totalBalls = allScores.length;
 
-    // Find best and worst holes by average
     const holeAvgs = ball_data.map((h, i) => ({
       hole: i + 1,
       avg: h.scores.reduce((a, b) => a + b, 0) / bph,
