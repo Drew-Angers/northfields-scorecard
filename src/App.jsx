@@ -16,6 +16,50 @@ const FRIDAY_PLAYERS = ["Jeff", "Nado", "Wizt", "Minnis", "Joe", "Saab"];
 const ADMIN_PIN = "0523";
 const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY || "";
 
+function Markdown({ text, style }) {
+  const inlineRender = (str, key) => {
+    const parts = [];
+    const re = /(\*\*(.+?)\*\*|\*(.+?)\*)/g;
+    let last = 0, m;
+    while ((m = re.exec(str)) !== null) {
+      if (m.index > last) parts.push(str.slice(last, m.index));
+      if (m[2] !== undefined) parts.push(<strong key={key + m.index}>{m[2]}</strong>);
+      else parts.push(<em key={key + m.index}>{m[3]}</em>);
+      last = m.index + m[0].length;
+    }
+    if (last < str.length) parts.push(str.slice(last));
+    return parts;
+  };
+
+  const lines = text.split("\n");
+  const elements = [];
+  let listItems = [];
+
+  const flushList = () => {
+    if (listItems.length) {
+      elements.push(<ul key={`ul-${elements.length}`} style={{ paddingLeft: 18, margin: "6px 0" }}>{listItems}</ul>);
+      listItems = [];
+    }
+  };
+
+  lines.forEach((line, i) => {
+    const h3 = line.match(/^### (.+)/);
+    const h2 = line.match(/^## (.+)/);
+    const h1 = line.match(/^# (.+)/);
+    const bullet = line.match(/^[-*] (.+)/);
+
+    if (h1) { flushList(); elements.push(<div key={i} style={{ fontWeight: 900, fontSize: "1.05rem", marginTop: 14, marginBottom: 4 }}>{inlineRender(h1[1], i)}</div>); }
+    else if (h2) { flushList(); elements.push(<div key={i} style={{ fontWeight: 800, fontSize: "0.95rem", marginTop: 12, marginBottom: 3, color: "inherit" }}>{inlineRender(h2[1], i)}</div>); }
+    else if (h3) { flushList(); elements.push(<div key={i} style={{ fontWeight: 700, fontSize: "0.88rem", marginTop: 10, marginBottom: 2 }}>{inlineRender(h3[1], i)}</div>); }
+    else if (bullet) { listItems.push(<li key={i} style={{ marginBottom: 3 }}>{inlineRender(bullet[1], i)}</li>); }
+    else if (line.trim() === "") { flushList(); if (elements.length) elements.push(<div key={i} style={{ height: 8 }} />); }
+    else { flushList(); elements.push(<div key={i} style={{ marginBottom: 4 }}>{inlineRender(line, i)}</div>); }
+  });
+  flushList();
+
+  return <div style={{ textAlign: "left", ...style }}>{elements}</div>;
+}
+
 async function claudeCall(system, messages, maxTokens = 400) {
   const headers = {
     "Content-Type": "application/json",
@@ -201,10 +245,16 @@ function suggestPutts(score, gir) {
 }
 
 function inferPuttsFromBool(score, gir, threePutt) {
-  if (threePutt) return 3;
-  if (score === 1) return 0;
-  if (gir) { if (score <= PAR - 1) return 1; if (score === PAR) return 2; return 3; }
-  else { if (score <= PAR - 1) return 0; if (score === PAR) return 1; return 2; }
+  if (gir) {
+    if (score <= 2) return 1;
+    if (score === 3) return 2;
+    return 3; // GIR + 4+ (bad 3-putt or worse)
+  } else {
+    if (score <= 2) return 0; // chip-in
+    if (score === 3) return 1; // scramble save
+    if (score === 4) return 2;
+    return threePutt ? 3 : 2; // No GIR + 5+: default 2, override to 3 if button pushed
+  }
 }
 
 function filterByPeriod(rounds, period) {
@@ -583,6 +633,51 @@ function BugReporter({ onBack }) {
 }
 
 // ─── HOME ─────────────────────────────────────────────────────────────────────
+function BirdieTicker() {
+  const [birdies, setBirdies] = useState([]);
+
+  useEffect(() => {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 7);
+    supabase.from("standard_rounds").select("player_name,date,scores,course")
+      .gte("date", cutoff.toISOString())
+      .order("date", { ascending: false })
+      .then(({ data }) => {
+        if (!data) return;
+        const items = [];
+        data.forEach(r => {
+          (r.scores || []).forEach((s, i) => {
+            if (s <= 2) {
+              const holeNum = r.course === "expanded12" ? EXPANDED_12[i]?.label : `${i + 1}`;
+              const d = new Date(r.date);
+              const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+              const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+              items.push({ player: r.player_name, hole: holeNum, dateStr, timeStr, ts: d.getTime() });
+            }
+          });
+        });
+        items.sort((a, b) => b.ts - a.ts);
+        setBirdies(items);
+      });
+  }, []);
+
+  if (!birdies.length) return null;
+
+  return (
+    <div style={{ margin: "16px 12px 0", background: "rgba(250,204,21,0.06)", border: "1px solid rgba(250,204,21,0.15)", borderRadius: 14, padding: "12px 14px" }}>
+      <div style={{ color: "#facc15", fontSize: "0.62rem", textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 10, fontWeight: 700 }}>🐦 Birdie Feed · Last 7 Days</div>
+      <div style={{ maxHeight: 160, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+        {birdies.map((b, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.82rem" }}>
+            <div><span style={{ fontWeight: 700, color: "#facc15" }}>{b.player}</span><span style={{ color: "#555" }}> · Hole {b.hole}</span></div>
+            <div style={{ color: "#444", fontSize: "0.72rem" }}>{b.dateStr} {b.timeStr}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Home({ onMode }) {
   const [showCaddie, setShowCaddie] = useState(false);
   return (
@@ -602,16 +697,20 @@ function Home({ onMode }) {
         <button style={{ ...M.btn, background: "rgba(139,92,246,0.12)", color: "#a78bfa", border: "1px solid rgba(139,92,246,0.25)", justifyContent: "space-between", padding: "20px 18px" }} onClick={() => onMode("friday")}>
           <div style={{ textAlign: "left" }}><div style={{ fontWeight: 900, fontSize: "1.05rem" }}>Friday League</div><div style={{ fontSize: "0.78rem", opacity: 0.7, fontWeight: 400, marginTop: 2 }}>12 holes · 6 players · vig + birdies</div></div><span>→</span>
         </button>
+        <button style={{ ...M.btn, background: "rgba(74,222,128,0.08)", color: "#4ade80", border: "1px solid rgba(74,222,128,0.2)", justifyContent: "space-between", padding: "20px 18px" }} onClick={() => onMode("allstats")}>
+          <div style={{ textAlign: "left" }}><div style={{ fontWeight: 900, fontSize: "1.05rem" }}>📊 All Stats</div><div style={{ fontSize: "0.78rem", opacity: 0.7, fontWeight: 400, marginTop: 2 }}>Course-wide aggregate · hole averages</div></div><span>→</span>
+        </button>
+        <button style={{ ...M.btn, background: "rgba(74,222,128,0.08)", color: "#4ade80", border: "1px solid rgba(74,222,128,0.2)", justifyContent: "space-between", padding: "20px 18px" }} onClick={() => setShowCaddie(true)}>
+          <div style={{ textAlign: "left" }}><div style={{ fontWeight: 900, fontSize: "1.05rem" }}>🎒 Ask the Caddie</div><div style={{ fontSize: "0.78rem", opacity: 0.7, fontWeight: 400, marginTop: 2 }}>AI golf assistant · stats · advice</div></div><span>→</span>
+        </button>
         <button style={{ ...M.btn, background: "rgba(255,200,100,0.08)", color: "#fb923c", border: "1px solid rgba(251,146,60,0.2)", justifyContent: "space-between", padding: "20px 18px" }} onClick={() => onMode("feedback")}>
           <div style={{ textAlign: "left" }}><div style={{ fontWeight: 900, fontSize: "1.05rem" }}>📣 Feedback</div><div style={{ fontSize: "0.78rem", opacity: 0.7, fontWeight: 400, marginTop: 2 }}>Report bugs · make suggestions</div></div><span>→</span>
         </button>
         <button style={{ ...M.btn, background: "rgba(255,255,255,0.04)", color: "#666", border: "1px solid rgba(255,255,255,0.08)", justifyContent: "space-between", padding: "20px 18px" }} onClick={() => onMode("admin")}>
           <div style={{ textAlign: "left" }}><div style={{ fontWeight: 900, fontSize: "1.05rem" }}>⚙️ Admin</div><div style={{ fontSize: "0.78rem", opacity: 0.7, fontWeight: 400, marginTop: 2 }}>Manage players · view feedback</div></div><span>→</span>
         </button>
-        <button style={{ ...M.btn, background: "rgba(74,222,128,0.08)", color: "#4ade80", border: "1px solid rgba(74,222,128,0.2)", justifyContent: "space-between", padding: "20px 18px" }} onClick={() => setShowCaddie(true)}>
-          <div style={{ textAlign: "left" }}><div style={{ fontWeight: 900, fontSize: "1.05rem" }}>🎒 Ask the Caddie</div><div style={{ fontSize: "0.78rem", opacity: 0.7, fontWeight: 400, marginTop: 2 }}>AI golf assistant · stats · advice</div></div><span>→</span>
-        </button>
       </div>
+      <BirdieTicker />
     </div>
   );
 }
@@ -784,7 +883,7 @@ function StandardApp({ players, onHome }) {
       date: new Date().toISOString(),
       scores: d.scores,
       girs: d.girs,
-      putts: d.putts,
+      putts: d.scores.map((s, i) => inferPuttsFromBool(s, d.girs[i], (d.threePutts || [])[i] || false)),
       course: course || "original9",
     }));
     const { data: inserted } = await supabase.from("standard_rounds").insert(inserts).select();
@@ -925,12 +1024,16 @@ function StandardEntry({ draftKey, initialDraft, initial, course = "original9", 
   const blank = {
     scores: Array(totalHoles).fill(PAR),
     girs: Array(totalHoles).fill(0),
-    putts: Array(totalHoles).fill(2),
+    threePutts: Array(totalHoles).fill(false),
     course,
     startHole,
     savedAt: new Date().toISOString(),
   };
-  const startData = initialDraft || (initial ? { scores: initial.scores, girs: initial.girs, putts: initial.putts, course: initial.course || "original9", startHole: 1, savedAt: new Date().toISOString() } : blank);
+  const startData = initialDraft
+    ? { ...initialDraft, threePutts: initialDraft.threePutts || (initialDraft.putts?.map(p => p >= 3) ?? Array(totalHoles).fill(false)) }
+    : initial
+      ? { scores: initial.scores, girs: initial.girs, threePutts: initial.putts?.map(p => p >= 3) ?? Array(totalHoles).fill(false), course: initial.course || "original9", startHole: 1, savedAt: new Date().toISOString() }
+      : blank;
   const [data, setData] = useState(startData);
   const [hole, setHole] = useState(initialDraft?.hole || 0);
   const isEditing = !!initial && !draftKey;
@@ -939,15 +1042,7 @@ function StandardEntry({ draftKey, initialDraft, initial, course = "original9", 
     setData(d => {
       const a = [...d[field]];
       a[hole] = val;
-      const newData = { ...d, [field]: a };
-      if (field === "scores" || field === "girs") {
-        const score = field === "scores" ? val : newData.scores[hole];
-        const gir = field === "girs" ? val : newData.girs[hole];
-        const puttsArr = [...newData.putts];
-        puttsArr[hole] = suggestPutts(score, gir);
-        newData.putts = puttsArr;
-      }
-      return newData;
+      return { ...d, [field]: a };
     });
   };
 
@@ -960,7 +1055,8 @@ function StandardEntry({ draftKey, initialDraft, initial, course = "original9", 
   const isBullshit = isExpanded && EXPANDED_12[hole] && !EXPANDED_12[hole].real;
 
   if (hole >= totalHoles) {
-    const st = calcStats(data.scores, data.girs, data.putts, true);
+    const inferredPutts = data.scores.map((s, i) => inferPuttsFromBool(s, data.girs[i], data.threePutts[i]));
+    const st = calcStats(data.scores, data.girs, inferredPutts, true);
     return (
       <div>
         <div style={M.header}>
@@ -977,13 +1073,13 @@ function StandardEntry({ draftKey, initialDraft, initial, course = "original9", 
               <tbody>
                 <tr><td style={M.td}>Score</td>{data.scores.map((s, i) => <td key={i} style={{ ...M.td, color: scoreColor(s), fontWeight: 700 }}>{s}</td>)}</tr>
                 <tr><td style={M.td}>GIR</td>{data.girs.map((g, i) => <td key={i} style={{ ...M.td, color: g ? "#4ade80" : "#444" }}>{g ? "✓" : "–"}</td>)}</tr>
-                <tr><td style={M.td}>Putts</td>{data.putts.map((p, i) => <td key={i} style={{ ...M.td, color: p >= 3 ? "#f87171" : p === 1 ? "#4ade80" : "#bbb" }}>{p}</td>)}</tr>
+                <tr><td style={M.td}>Putts</td>{inferredPutts.map((p, i) => <td key={i} style={{ ...M.td, color: p >= 3 ? "#f87171" : p === 1 ? "#4ade80" : "#bbb" }}>{p}</td>)}</tr>
               </tbody>
             </table>
           </div>
           <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
             <button style={{ ...M.btnSm, flex: 1 }} onClick={() => setHole(totalHoles - 1)}>← Edit</button>
-            <button style={{ ...M.btn, flex: 2 }} onClick={() => onComplete(data)}>Save Round</button>
+            <button style={{ ...M.btn, flex: 2 }} onClick={() => onComplete({ ...data, putts: inferredPutts })}>Save Round</button>
           </div>
         </div>
       </div>
@@ -1021,15 +1117,10 @@ function StandardEntry({ draftKey, initialDraft, initial, course = "original9", 
         </div>
 
         <div style={{ marginBottom: 28 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={{ color: "#444", fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.12em" }}>Putts</div>
-            <div style={{ color: "#555", fontSize: "0.65rem" }}>suggested: {suggestPutts(data.scores[hole], data.girs[hole])}</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <button style={M.scoreBtn} onClick={() => setData(d => { const a = [...d.putts]; a[hole] = Math.max(0, a[hole] - 1); return { ...d, putts: a }; })}>−</button>
-            <span style={{ fontSize: "2.8rem", fontWeight: 900, fontFamily: "monospace", minWidth: 48, textAlign: "center", lineHeight: 1, color: data.putts[hole] >= 3 ? "#f87171" : data.putts[hole] === 1 ? "#4ade80" : "#fff" }}>{data.putts[hole]}</span>
-            <button style={M.scoreBtn} onClick={() => setData(d => { const a = [...d.putts]; a[hole] = Math.min(3, a[hole] + 1); return { ...d, putts: a }; })}>+</button>
-          </div>
+          <div style={{ color: "#444", fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 10 }}>3-Putt?</div>
+          <button onClick={() => set("threePutts", !data.threePutts[hole])} style={M.toggle(data.threePutts[hole], "#f87171", "rgba(248,113,113,0.12)")}>
+            {data.threePutts[hole] ? "3-Putt ✓" : "No 3-Putt"}
+          </button>
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
@@ -1103,7 +1194,7 @@ function StandardDetail({ round, allRounds, onBack, onDelete, onEdit }) {
           {synopsisLoading ? (
             <div style={{ color: "#444", fontSize: "0.82rem" }}>Reading your round…</div>
           ) : synopsis ? (
-            <div style={{ color: "#ccc", fontSize: "0.85rem", lineHeight: 1.6 }}>{synopsis}</div>
+            <Markdown text={synopsis} style={{ color: "#ccc", fontSize: "0.85rem", lineHeight: 1.6 }} />
           ) : (
             <div style={{ color: "#444", fontSize: "0.82rem" }}>Synopsis unavailable.</div>
           )}
@@ -1392,7 +1483,7 @@ function MultiSetup({ players, allRounds, onStart, onBack }) {
 function MultiStrokePlay({ config, allRounds, onComplete, onCancel }) {
   const { players, matchAmt, skinAmt, birdieAmt, ctpAmt, useHandicap, playerHcps, course, startHole, holeOrder, totalHoles } = config;
   const isExpanded = course === "expanded12";
-  const blank = () => ({ scores: Array(totalHoles).fill(PAR), girs: Array(totalHoles).fill(0), putts: Array(totalHoles).fill(2) });
+  const blank = () => ({ scores: Array(totalHoles).fill(PAR), girs: Array(totalHoles).fill(0), threePutts: Array(totalHoles).fill(false) });
   const [playerData, setPlayerData] = useState(() => Object.fromEntries(players.map(p => [p, blank()])));
   const [holeIdx, setHoleIdx] = useState(0);
   const [ctpWinner, setCtpWinner] = useState(null);
@@ -1412,11 +1503,6 @@ function MultiStrokePlay({ config, allRounds, onComplete, onCancel }) {
     setPlayerData(d => {
       const updated = { ...d[player], [field]: [...d[player][field]] };
       updated[field][holeIdx] = val;
-      if (field === "scores" || field === "girs") {
-        const s = field === "scores" ? val : updated.scores[holeIdx];
-        const g = field === "girs" ? val : updated.girs[holeIdx];
-        updated.putts[holeIdx] = suggestPutts(s, g);
-      }
       return { ...d, [player]: updated };
     });
   };
@@ -1594,12 +1680,19 @@ function MultiStrokePlay({ config, allRounds, onComplete, onCancel }) {
           </div>
           <div style={{ background: "rgba(250,204,21,0.08)", borderRadius: 12, padding: "10px 12px", border: "1px solid rgba(250,204,21,0.15)", minWidth: 148 }}>
             <div style={{ color: "#555", fontSize: "0.58rem", textTransform: "uppercase", marginBottom: 6 }}>Leaderboard</div>
-            {leaderboard.map((p, i) => (
-              <div key={p.name} style={{ fontSize: "0.78rem", color: i === 0 ? "#facc15" : "#555", fontWeight: i === 0 ? 800 : 400, marginBottom: 3, display: "flex", alignItems: "center", gap: 4 }}>
-                {i === 0 ? "🏆" : `${i + 1}.`} {p.name}
-                <span style={{ fontFamily: "monospace", marginLeft: "auto" }}>{fmtOver(useHandicap ? p.netOver : p.grossOver)}</span>
-              </div>
-            ))}
+            {leaderboard.map((p, i) => {
+              const myScore = useHandicap ? p.netOver : p.grossOver;
+              const pos = leaderboard.filter(q => (useHandicap ? q.netOver : q.grossOver) < myScore).length + 1;
+              const tied = leaderboard.filter(q => (useHandicap ? q.netOver : q.grossOver) === myScore).length > 1;
+              const label = tied ? `T${pos}` : `${pos}`;
+              const isFirst = pos === 1;
+              return (
+                <div key={p.name} style={{ fontSize: "0.78rem", color: isFirst ? "#facc15" : "#555", fontWeight: isFirst ? 800 : 400, marginBottom: 3, display: "flex", alignItems: "center", gap: 4 }}>
+                  {isFirst && !tied ? "🏆" : label} {p.name}
+                  <span style={{ fontFamily: "monospace", marginLeft: "auto" }}>{fmtOver(myScore)}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -1622,11 +1715,9 @@ function MultiStrokePlay({ config, allRounds, onComplete, onCancel }) {
                 <button onClick={() => setVal(p, "girs", playerData[p].girs[holeIdx] === 1 ? 0 : 1)} style={M.toggle(playerData[p].girs[holeIdx] === 1, "#4ade80", "rgba(74,222,128,0.1)")}>
                   {playerData[p].girs[holeIdx] ? "GIR ✓" : "GIR ✗"}
                 </button>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, justifyContent: "flex-end" }}>
-                  <button style={{ ...M.scoreBtn, width: 36, height: 36, minWidth: 36, fontSize: "1rem" }} onClick={() => setVal(p, "putts", Math.max(0, playerData[p].putts[holeIdx] - 1))}>−</button>
-                  <span style={{ fontFamily: "monospace", fontWeight: 700, minWidth: 20, textAlign: "center", color: playerData[p].putts[holeIdx] >= 3 ? "#f87171" : "#bbb" }}>{playerData[p].putts[holeIdx]}p</span>
-                  <button style={{ ...M.scoreBtn, width: 36, height: 36, minWidth: 36, fontSize: "1rem" }} onClick={() => setVal(p, "putts", Math.min(3, playerData[p].putts[holeIdx] + 1))}>+</button>
-                </div>
+                <button onClick={() => setVal(p, "threePutts", !playerData[p].threePutts[holeIdx])} style={{ ...M.toggle(playerData[p].threePutts[holeIdx], "#f87171", "rgba(248,113,113,0.12)"), flex: 1 }}>
+                  {playerData[p].threePutts[holeIdx] ? "3-Putt ✓" : "No 3-Putt"}
+                </button>
               </div>
             </div>
           );
@@ -1929,6 +2020,68 @@ function PracticeEntry({ draftKey, config, initialDraft, initial, onComplete, on
   );
 }
 
+function PracticeHoleStats({ round, allRounds }) {
+  const [view, setView] = useState("session");
+  const isExpanded = round.course === "expanded12";
+  const holeCount = isExpanded ? 12 : 9;
+  const holeLabels = isExpanded ? EXPANDED_12.map(h => h.label) : Array.from({length: 9}, (_, i) => `${i + 1}`);
+
+  const sessionData = Array.from({length: holeCount}, (_, i) => {
+    const h = round.ball_data[i] || { scores: [], girs: [] };
+    const n = h.scores.length;
+    const avg = n ? h.scores.reduce((a, b) => a + b, 0) / n : null;
+    const girPct = n ? Math.round(h.girs.filter(Boolean).length / n * 100) : null;
+    return { avg, girPct };
+  });
+
+  const playerRounds = (allRounds || []).filter(r => r.player_name === round.player_name);
+  const allTimeData = Array.from({length: holeCount}, (_, i) => {
+    const scores = playerRounds.flatMap(r => r.ball_data?.[i]?.scores || []);
+    const girs = playerRounds.flatMap(r => r.ball_data?.[i]?.girs || []);
+    const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+    const girPct = girs.length ? Math.round(girs.filter(Boolean).length / girs.length * 100) : null;
+    return { avg, girPct };
+  });
+
+  const data = view === "session" ? sessionData : allTimeData;
+  const avgs = data.map(d => d.avg).filter(v => v !== null);
+  const minAvg = avgs.length ? Math.min(...avgs) : null;
+  const maxAvg = avgs.length ? Math.max(...avgs) : null;
+  const avgColor = a => a === null ? "#555" : a === minAvg ? "#4ade80" : a === maxAvg ? "#f87171" : "#fb923c";
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ color: "#444", fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.15em" }}>Hole Breakdown</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => setView("session")} style={{ ...M.btnSm, fontSize: "0.65rem", padding: "4px 10px", background: view === "session" ? "rgba(250,204,21,0.2)" : "rgba(255,255,255,0.04)", color: view === "session" ? "#facc15" : "#555", border: `1px solid ${view === "session" ? "rgba(250,204,21,0.4)" : "rgba(255,255,255,0.08)"}` }}>This Session</button>
+          <button onClick={() => setView("all")} style={{ ...M.btnSm, fontSize: "0.65rem", padding: "4px 10px", background: view === "all" ? "rgba(250,204,21,0.2)" : "rgba(255,255,255,0.04)", color: view === "all" ? "#facc15" : "#555", border: `1px solid ${view === "all" ? "rgba(250,204,21,0.4)" : "rgba(255,255,255,0.08)"}` }}>All Sessions</button>
+        </div>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: "0.75rem", minWidth: "100%" }}>
+          <thead>
+            <tr>
+              <th style={M.th}>H</th>
+              {holeLabels.map((l, i) => <th key={i} style={{ ...M.th, fontSize: "0.6rem", color: isExpanded && !EXPANDED_12[i]?.real ? "#a78bfa" : "#444" }}>{l}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style={M.td}>Avg</td>
+              {data.map((d, i) => <td key={i} style={{ ...M.td, color: avgColor(d.avg), fontWeight: 600 }}>{d.avg !== null ? d.avg.toFixed(2) : "—"}</td>)}
+            </tr>
+            <tr>
+              <td style={M.td}>GIR%</td>
+              {data.map((d, i) => <td key={i} style={{ ...M.td, color: d.girPct !== null ? (d.girPct >= 50 ? "#4ade80" : d.girPct >= 25 ? "#fb923c" : "#f87171") : "#555", fontWeight: 600 }}>{d.girPct !== null ? `${d.girPct}%` : "—"}</td>)}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function PracticeDetail({ round, allRounds, onBack, onDelete, onEdit }) {
   const ballData = round.ball_data;
   const bph = round.balls_per_hole || 5;
@@ -1965,7 +2118,7 @@ function PracticeDetail({ round, allRounds, onBack, onDelete, onEdit }) {
           {synopsisLoading ? (
             <div style={{ color: "#444", fontSize: "0.82rem" }}>Reading your session…</div>
           ) : synopsis ? (
-            <div style={{ color: "#ccc", fontSize: "0.85rem", lineHeight: 1.6 }}>{synopsis}</div>
+            <Markdown text={synopsis} style={{ color: "#ccc", fontSize: "0.85rem", lineHeight: 1.6 }} />
           ) : (
             <div style={{ color: "#444", fontSize: "0.82rem" }}>Synopsis unavailable.</div>
           )}
@@ -1995,6 +2148,10 @@ function PracticeDetail({ round, allRounds, onBack, onDelete, onEdit }) {
         })}
         <div style={{ color: "#444", fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.15em", margin: "16px 0 12px" }}>Combined Stats ({allScores.length} balls)</div>
         <StatsGrid st={st} />
+
+        {/* Per-hole stats table with session / all-time toggle */}
+        <PracticeHoleStats round={round} allRounds={allRounds} />
+
         <button onClick={() => setShowCaddie(true)} style={{ ...M.btn, background: "rgba(250,204,21,0.08)", color: "#facc15", border: "1px solid rgba(250,204,21,0.2)", marginBottom: 10 }}>
           🎒 Ask the Caddie
         </button>
@@ -2031,6 +2188,20 @@ function PracticeStats({ rounds, player, onBack }) {
   const avgFn = fn => allSt.length === 0 ? null : allSt.reduce((s, r) => s + fn(r), 0) / allSt.length;
   const avgOverUnder = avgFn(r => r.overUnder);
 
+  const holeCount = 9;
+  const holeScoreAvgs = Array.from({length: holeCount}, (_, i) => {
+    const scores = filtered.flatMap(r => r.ball_data?.[i]?.scores || []);
+    return scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  });
+  const holeGirPcts = Array.from({length: holeCount}, (_, i) => {
+    const girs = filtered.flatMap(r => r.ball_data?.[i]?.girs || []);
+    return girs.length ? Math.round(girs.filter(Boolean).length / girs.length * 100) : null;
+  });
+  const validAvgs = holeScoreAvgs.filter(v => v !== null);
+  const minAvg = validAvgs.length ? Math.min(...validAvgs) : null;
+  const maxAvg = validAvgs.length ? Math.max(...validAvgs) : null;
+  const holeAvgColor = a => a === null ? "#555" : a === minAvg ? "#4ade80" : a === maxAvg ? "#f87171" : "#fb923c";
+
   return (
     <div>
       {showCaddie && <CaddieChat context={caddieContext} onClose={() => setShowCaddie(false)} />}
@@ -2043,16 +2214,37 @@ function PracticeStats({ rounds, player, onBack }) {
           {hcp === null && filtered.length < 5 && <div style={{ color: "#444", fontSize: "0.8rem", marginTop: 8 }}>{5 - filtered.length} more needed</div>}
         </div>
         {allSt.length > 0 && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 20 }}>
-            <StatBox val={isRecent ? fmtOver(allSt[0].overUnder) : (avgOverUnder !== null ? fmtOverAvg(avgOverUnder) : "—")} label="Avg +/- Per Round" accent="#fff" />
-            <StatBox val={`${isRecent ? allSt[0].girPct : Math.round(avgFn(r => r.girPct))}%`} label="GIR %" />
-            <StatBox val={`${isRecent ? allSt[0].upAndDownPct : Math.round(avgFn(r => r.upAndDownPct))}%`} label="Scramble %" accent="#4ade80" />
-            <StatBox val={`${isRecent ? allSt[0].birdieConvPct : Math.round(avgFn(r => r.birdieConvPct))}%`} label="Birdie Conv %" accent="#facc15" />
-            <StatBox val={`${isRecent ? allSt[0].blowupPct : Math.round(avgFn(r => r.blowupPct))}%`} label="Blow-up %" accent="#f87171" />
-            <StatBox val={isRecent ? (allSt[0].birdieBogeRatio === 999 ? "∞" : allSt[0].birdieBogeRatio.toFixed(2)) : (avgFn(r => r.birdieBogeRatio === 999 ? 0 : r.birdieBogeRatio)?.toFixed(2) ?? "—")} label="Birdie:Bogey+" />
-            <StatBox val={`${isRecent ? allSt[0].consistencyPct : Math.round(avgFn(r => r.consistencyPct))}%`} label="Consistency" />
-            <StatBox val={isRecent ? allSt[0].avgPutts.toFixed(2) : avgFn(r => r.avgPutts)?.toFixed(2) ?? "—"} label="Avg Putts" />
-          </div>
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 20 }}>
+              <StatBox val={isRecent ? fmtOver(allSt[0].overUnder) : (avgOverUnder !== null ? fmtOverAvg(avgOverUnder) : "—")} label="Avg +/- Per Round" accent="#fff" />
+              <StatBox val={`${isRecent ? allSt[0].girPct : Math.round(avgFn(r => r.girPct))}%`} label="GIR %" />
+              <StatBox val={`${isRecent ? allSt[0].upAndDownPct : Math.round(avgFn(r => r.upAndDownPct))}%`} label="Scramble %" accent="#4ade80" />
+              <StatBox val={`${isRecent ? allSt[0].birdieConvPct : Math.round(avgFn(r => r.birdieConvPct))}%`} label="Birdie Conv %" accent="#facc15" />
+              <StatBox val={`${isRecent ? allSt[0].blowupPct : Math.round(avgFn(r => r.blowupPct))}%`} label="Blow-up %" accent="#f87171" />
+              <StatBox val={isRecent ? (allSt[0].birdieBogeRatio === 999 ? "∞" : allSt[0].birdieBogeRatio.toFixed(2)) : (avgFn(r => r.birdieBogeRatio === 999 ? 0 : r.birdieBogeRatio)?.toFixed(2) ?? "—")} label="Birdie:Bogey+" />
+              <StatBox val={`${isRecent ? allSt[0].consistencyPct : Math.round(avgFn(r => r.consistencyPct))}%`} label="Consistency" />
+              <StatBox val={isRecent ? allSt[0].avgPutts.toFixed(2) : avgFn(r => r.avgPutts)?.toFixed(2) ?? "—"} label="Avg Putts" />
+            </div>
+
+            <div style={{ color: "#444", fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 12 }}>
+              {isRecent ? "Scorecard (This Session)" : "Hole Averages"}
+            </div>
+            <div style={{ overflowX: "auto", marginBottom: 20 }}>
+              <table style={{ borderCollapse: "collapse", fontSize: "0.78rem", minWidth: "100%" }}>
+                <thead><tr><th style={M.th}>H</th>{Array.from({length: holeCount}, (_, i) => <th key={i} style={M.th}>{i + 1}</th>)}</tr></thead>
+                <tbody>
+                  <tr>
+                    <td style={M.td}>Avg</td>
+                    {holeScoreAvgs.map((a, i) => <td key={i} style={{ ...M.td, color: holeAvgColor(a), fontWeight: 600 }}>{a !== null ? a.toFixed(2) : "—"}</td>)}
+                  </tr>
+                  <tr>
+                    <td style={M.td}>GIR%</td>
+                    {holeGirPcts.map((g, i) => <td key={i} style={{ ...M.td, color: g !== null ? (g >= 50 ? "#4ade80" : g >= 25 ? "#fb923c" : "#f87171") : "#555", fontWeight: 600 }}>{g !== null ? `${g}%` : "—"}</td>)}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
         {allSt.length === 0 && <div style={{ color: "#444", textAlign: "center", padding: "40px 0" }}>No sessions in this period.</div>}
         <button onClick={() => setShowCaddie(true)} style={{ ...M.btn, background: "rgba(250,204,21,0.08)", color: "#facc15", border: "1px solid rgba(250,204,21,0.2)", marginTop: 8 }}>
@@ -2411,7 +2603,7 @@ function FridayDetail({ round, allRounds, onBack, onDelete }) {
           {synopsisLoading ? (
             <div style={{ color: "#444", fontSize: "0.82rem" }}>Reviewing the round…</div>
           ) : synopsis ? (
-            <div style={{ color: "#ccc", fontSize: "0.85rem", lineHeight: 1.6 }}>{synopsis}</div>
+            <Markdown text={synopsis} style={{ color: "#ccc", fontSize: "0.85rem", lineHeight: 1.6 }} />
           ) : (
             <div style={{ color: "#444", fontSize: "0.82rem" }}>Synopsis unavailable.</div>
           )}
@@ -2733,16 +2925,130 @@ function CaddieChat({ context, onClose }) {
       let system = "You are a helpful golf caddie AI for Northfields Golf Course (par-3 layout). Be concise and conversational.";
       if (mode === "standard") {
         const p = context.player || "the player";
-        const rounds = (context.standardRounds || []).slice(0,10);
-        const hist = rounds.map(r => { const t=r.scores?.reduce((a,b)=>a+b,0)||0; const o=t-r.scores?.length*3; return `${r.date?new Date(r.date).toLocaleDateString("en-US",{month:"short",day:"numeric"}):"?"}: ${o>=0?"+":""}${o}`; }).join(", ");
-        system = `You are a golf caddie AI for ${p} at Northfields Golf Course (par-3). Recent rounds: ${hist||"none"}. Be specific, use their stats, keep a friendly coaching tone.`;
+        const rounds = (context.standardRounds || []).slice(0, 10);
+        const fmtO = v => v > 0 ? `+${v}` : v === 0 ? "E" : `${v}`;
+
+        // Per-round summary
+        const roundLines = rounds.map(r => {
+          const scores = r.scores || [];
+          const girs = r.girs || [];
+          const tp = r.three_putts || r.threePutts || [];
+          const n = scores.length;
+          const total = scores.reduce((a,b)=>a+b,0);
+          const over = total - n * 3;
+          const girCount = girs.filter(Boolean).length;
+          const birdies = scores.filter(s=>s<=2).length;
+          const blowups = scores.filter(s=>s>=5).length;
+          const missedGIR = girs.map((g,i)=>!g?i:-1).filter(i=>i>=0);
+          const scrambles = missedGIR.filter(i=>scores[i]<=3).length;
+          const scrPct = missedGIR.length ? Math.round(scrambles/missedGIR.length*100) : 100;
+          const girBirdies = scores.filter((s,i)=>girs[i]&&s<=2).length;
+          const birdieConv = girCount ? Math.round(girBirdies/girCount*100) : 0;
+          const tpCount = Array.isArray(tp) ? tp.filter(Boolean).length : 0;
+          const dateStr = r.date ? new Date(r.date).toLocaleDateString("en-US",{month:"short",day:"numeric"}) : "?";
+          return `${dateStr}: ${fmtO(over)} | GIR ${girCount}/${n} (${Math.round(girCount/n*100)}%) | Birdie conv ${birdieConv}% | Scramble ${scrPct}% | Blowups ${blowups} | 3-putts ${tpCount}`;
+        }).join("\n");
+
+        // Aggregate hole-level GIR misses across all rounds (holes 1-9)
+        const holeMissCount = Array(9).fill(0);
+        const holeRoundCount = Array(9).fill(0);
+        rounds.forEach(r => {
+          (r.girs || []).forEach((g, i) => {
+            if (i < 9) { holeRoundCount[i]++; if (!g) holeMissCount[i]++; }
+          });
+        });
+        const holeMissPct = holeMissCount.map((m,i) => holeRoundCount[i] ? Math.round(m/holeRoundCount[i]*100) : null);
+        const worstGIRHoles = holeMissPct
+          .map((pct,i) => ({ hole: i+1, pct }))
+          .filter(h => h.pct !== null)
+          .sort((a,b) => b.pct - a.pct)
+          .slice(0, 4)
+          .map(h => `Hole ${h.hole} (missed ${h.pct}% of rounds)`)
+          .join(", ");
+
+        // Aggregate overall stats
+        const allScores = rounds.flatMap(r=>r.scores||[]);
+        const allGirs = rounds.flatMap(r=>r.girs||[]);
+        const totalGIR = allGirs.filter(Boolean).length;
+        const overallGirPct = allGirs.length ? Math.round(totalGIR/allGirs.length*100) : 0;
+        const overallBirdieConv = totalGIR ? Math.round(allScores.filter((s,i)=>allGirs[i]&&s<=2).length/totalGIR*100) : 0;
+        const allMissedGIR = allGirs.map((g,i)=>!g?i:-1).filter(i=>i>=0);
+        const overallScramble = allMissedGIR.length ? Math.round(allMissedGIR.filter(i=>allScores[i]<=3).length/allMissedGIR.length*100) : 0;
+        const overallBlowups = allScores.filter(s=>s>=5).length;
+        const overallBlowupPct = allScores.length ? Math.round(overallBlowups/allScores.length*100) : 0;
+
+        system = `You are ${p}'s personal golf caddie at Northfields Golf Course (par-3, 9 holes). You have their full stat history below. Behave like a real caddie: direct, honest, prioritize the highest-leverage fix first, reference exact numbers from their data. Never give generic golf advice — tie every observation back to their specific stats and holes. Don't pad responses, don't ask rhetorical questions at the end, don't hedge. If their scrambling is good, say so and move on. If their birdie conversion on GIR is low, say what that means and what to do about it. Benchmark: GIR birdie conversion 10-20% is solid for an amateur; scrambling above 50% is good; blowup rate (double+) above 15% of holes is a real scoring problem on par-3s.
+
+OVERALL (last ${rounds.length} rounds):
+GIR: ${overallGirPct}% | Birdie conversion on GIR: ${overallBirdieConv}% | Scrambling: ${overallScramble}% | Blowup rate: ${overallBlowupPct}%
+Worst GIR holes: ${worstGIRHoles || "not enough data"}
+
+ROUND-BY-ROUND:
+${roundLines || "no rounds recorded"}`;
       } else if (mode === "practice") {
         const p = context.player || "the player";
-        system = `You are a golf instructor AI for ${p} at Northfields Golf Course (par-3 multi-ball practice format). Be specific and constructive.`;
+        const practiceRounds = (context.practiceRounds || []).slice(0, 8);
+
+        const roundLines = practiceRounds.map(r => {
+          const bph = r.balls_per_hole || 5;
+          const allScores = (r.ball_data || []).flatMap(h => h.scores || []);
+          const allGirs = (r.ball_data || []).flatMap(h => h.girs || []);
+          const n = allScores.length;
+          if (!n) return null;
+          const avg = (allScores.reduce((a,b)=>a+b,0)/n).toFixed(2);
+          const girCount = allGirs.filter(Boolean).length;
+          const girPct = Math.round(girCount / n * 100);
+          const birdies = allScores.filter(s=>s<=2).length;
+          const blowups = allScores.filter(s=>s>=5).length;
+          const missedGIR = allGirs.map((g,i)=>!g?i:-1).filter(i=>i>=0);
+          const scrambles = missedGIR.filter(i=>allScores[i]<=3).length;
+          const scrPct = missedGIR.length ? Math.round(scrambles/missedGIR.length*100) : 100;
+          const girBirdies = allScores.filter((s,i)=>allGirs[i]&&s<=2).length;
+          const birdieConv = girCount ? Math.round(girBirdies/girCount*100) : 0;
+          const dateStr = r.date ? new Date(r.date).toLocaleDateString("en-US",{month:"short",day:"numeric"}) : "?";
+          const holeAvgs = (r.ball_data || []).map((h,i) => {
+            const hs = h.scores || [];
+            return hs.length ? `H${i+1}:${(hs.reduce((a,b)=>a+b,0)/hs.length).toFixed(1)}` : null;
+          }).filter(Boolean).join(" ");
+          return `${dateStr} (${bph} balls/hole): avg ${avg} | GIR ${girPct}% | Birdie conv ${birdieConv}% | Scramble ${scrPct}% | Blowups ${blowups}/${n}\n  Hole avgs: ${holeAvgs}`;
+        }).filter(Boolean).join("\n");
+
+        // Aggregate hole-level stats across all sessions
+        const holeCount = 9;
+        const holeAvgAgg = Array.from({length: holeCount}, (_,i) => {
+          const scores = practiceRounds.flatMap(r => (r.ball_data?.[i]?.scores || []));
+          const girs = practiceRounds.flatMap(r => (r.ball_data?.[i]?.girs || []));
+          if (!scores.length) return null;
+          const avg = scores.reduce((a,b)=>a+b,0)/scores.length;
+          const girPct = girs.length ? Math.round(girs.filter(Boolean).length/girs.length*100) : 0;
+          return { hole: i+1, avg: avg.toFixed(2), girPct };
+        }).filter(Boolean);
+        const worstHoles = [...holeAvgAgg].sort((a,b)=>b.avg-a.avg).slice(0,3).map(h=>`Hole ${h.hole} (avg ${h.avg}, GIR ${h.girPct}%)`).join(", ");
+        const bestHoles = [...holeAvgAgg].sort((a,b)=>a.avg-b.avg).slice(0,3).map(h=>`Hole ${h.hole} (avg ${h.avg}, GIR ${h.girPct}%)`).join(", ");
+
+        const allScoresAll = practiceRounds.flatMap(r=>(r.ball_data||[]).flatMap(h=>h.scores||[]));
+        const allGirsAll = practiceRounds.flatMap(r=>(r.ball_data||[]).flatMap(h=>h.girs||[]));
+        const totalGIR = allGirsAll.filter(Boolean).length;
+        const overallGirPct = allGirsAll.length ? Math.round(totalGIR/allGirsAll.length*100) : 0;
+        const overallBirdieConv = totalGIR ? Math.round(allScoresAll.filter((s,i)=>allGirsAll[i]&&s<=2).length/totalGIR*100) : 0;
+        const allMissed = allGirsAll.map((g,i)=>!g?i:-1).filter(i=>i>=0);
+        const overallScramble = allMissed.length ? Math.round(allMissed.filter(i=>allScoresAll[i]<=3).length/allMissed.length*100) : 0;
+        const overallBlowupPct = allScoresAll.length ? Math.round(allScoresAll.filter(s=>s>=5).length/allScoresAll.length*100) : 0;
+        const overallAvg = allScoresAll.length ? (allScoresAll.reduce((a,b)=>a+b,0)/allScoresAll.length).toFixed(2) : "?";
+
+        system = `You are ${p}'s personal caddie at Northfields Golf Course (par-3, 9 holes, multi-ball practice format). You have their full practice history below. Be direct and specific — reference exact numbers, name specific holes, prioritize the highest-leverage thing to work on. No generic tips. Benchmark: avg per ball near 3.0 is solid; GIR birdie conversion 10-20% is good; scrambling above 50% is good; blowup rate above 15% is a problem.
+
+OVERALL (last ${practiceRounds.length} sessions):
+Avg per ball: ${overallAvg} | GIR: ${overallGirPct}% | Birdie conv on GIR: ${overallBirdieConv}% | Scrambling: ${overallScramble}% | Blowup rate: ${overallBlowupPct}%
+Worst holes: ${worstHoles || "not enough data"}
+Best holes: ${bestHoles || "not enough data"}
+
+SESSION-BY-SESSION:
+${roundLines || "no sessions recorded"}`;
       } else if (mode === "friday_group") {
-        system = `You are a golf caddie AI for the Northfields Friday League (par-3, 12 holes, players: Jeff, Nado, Wizt, Minnis, Joe, Saab). Be fun and a little sarcastic like a friend who knows golf.`;
+        system = `You are the caddie for the Northfields Friday League (par-3, 12 holes, players: Jeff, Nado, Wizt, Minnis, Joe, Saab). You know everyone's game. Be direct and a little sarcastic like a friend who knows golf — call out who's actually improving and who's fooling themselves.`;
       }
-      const reply = await claudeCall(system, newMessages.map(m=>({role:m.role,content:m.content})), 500);
+      const reply = await claudeCall(system, newMessages.map(m=>({role:m.role,content:m.content})), 700);
       setMessages(m => [...m, { role: "assistant", content: reply || "Sorry, I couldn't get a response." }]);
     } catch {
       setMessages(m => [...m, { role: "assistant", content: "Connection error. Try again." }]);
@@ -2781,7 +3087,7 @@ function CaddieChat({ context, onClose }) {
               lineHeight: 1.5,
               color: m.role === "user" ? "#4ade80" : "#ddd",
             }}>
-              {m.content}
+              {m.role === "assistant" ? <Markdown text={m.content} /> : m.content}
             </div>
           </div>
         ))}
@@ -2807,6 +3113,132 @@ function CaddieChat({ context, onClose }) {
         <button onClick={send} disabled={!input.trim() || loading} style={{ background: "#4ade80", color: "#000", border: "none", borderRadius: 12, padding: "14px 18px", fontWeight: 800, fontSize: "0.9rem", cursor: "pointer", opacity: (!input.trim() || loading) ? 0.4 : 1, WebkitTapHighlightColor: "transparent" }}>
           →
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── ALL STATS ────────────────────────────────────────────────────────────────
+function AllStats({ onBack }) {
+  const [rounds, setRounds] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [period, setPeriod] = useState("all");
+
+  useEffect(() => {
+    supabase.from("standard_rounds").select("*").order("date", { ascending: false }).then(({ data }) => {
+      setRounds(data || []);
+      setLoading(false);
+    });
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (period === "all") return rounds;
+    const now = new Date();
+    if (period === "lastday") {
+      const cutoff = new Date(now); cutoff.setDate(cutoff.getDate() - 1);
+      return rounds.filter(r => new Date(r.date) >= cutoff);
+    }
+    if (period === "month") {
+      return rounds.filter(r => { const d = new Date(r.date); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); });
+    }
+    if (period === "lastmonth") {
+      const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lmEnd = new Date(now.getFullYear(), now.getMonth(), 1);
+      return rounds.filter(r => { const d = new Date(r.date); return d >= lm && d < lmEnd; });
+    }
+    return rounds;
+  }, [rounds, period]);
+
+  // Normalize all rounds to 9 original holes only (map expanded12 real holes, drop bullshit)
+  const normalized = useMemo(() => filtered.map(r => {
+    if (r.course === "expanded12") {
+      const { scores, girs, putts } = extractRealHoleScores(r.scores, r.girs, r.putts);
+      return { ...r, scores, girs, putts };
+    }
+    return r;
+  }), [filtered]);
+
+  const allScores = normalized.flatMap(r => r.scores || []);
+  const allGirs = normalized.flatMap(r => r.girs || []);
+  const allPutts = normalized.flatMap(r => r.putts || []);
+
+  const totalGIR = allGirs.filter(Boolean).length;
+  const overallGirPct = allGirs.length ? Math.round(totalGIR / allGirs.length * 100) : null;
+  const overallBirdieConv = totalGIR ? Math.round(allScores.filter((s, i) => allGirs[i] && s <= 2).length / totalGIR * 100) : null;
+  const allMissed = allGirs.map((g, i) => !g ? i : -1).filter(i => i >= 0);
+  const overallScramble = allMissed.length ? Math.round(allMissed.filter(i => allScores[i] <= 3).length / allMissed.length * 100) : null;
+  const overallBlowupPct = allScores.length ? Math.round(allScores.filter(s => s >= 5).length / allScores.length * 100) : null;
+  const overallAvgRaw = allScores.length ? allScores.reduce((a, b) => a + b, 0) / allScores.length : null;
+  const overallAvgOverPar = overallAvgRaw !== null ? overallAvgRaw - PAR : null;
+  const fmtAvgOver = v => v === null ? "—" : (v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2));
+  const overallBirdies = allScores.filter(s => s <= 2).length;
+  const overallAvgPutts = allPutts.length ? (allPutts.reduce((a, b) => a + b, 0) / allPutts.length).toFixed(2) : null;
+  const girPuttHoles = allGirs.map((g, i) => g ? allPutts[i] : null).filter(v => v != null);
+  const puttsPerGIR = girPuttHoles.length ? (girPuttHoles.reduce((a, b) => a + b, 0) / girPuttHoles.length).toFixed(2) : null;
+
+  // Per-hole aggregates
+  const holeScoreAvgs = Array.from({length: 9}, (_, i) => {
+    const scores = normalized.map(r => r.scores?.[i]).filter(s => s != null);
+    return scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  });
+  const holeGirPcts = Array.from({length: 9}, (_, i) => {
+    const girs = normalized.map(r => r.girs?.[i]).filter(g => g != null);
+    return girs.length ? Math.round(girs.filter(Boolean).length / girs.length * 100) : null;
+  });
+  const validAvgs = holeScoreAvgs.filter(v => v !== null);
+  const minAvg = validAvgs.length ? Math.min(...validAvgs) : null;
+  const maxAvg = validAvgs.length ? Math.max(...validAvgs) : null;
+  const holeAvgColor = a => a === null ? "#555" : a === minAvg ? "#4ade80" : a === maxAvg ? "#f87171" : "#fb923c";
+
+  const PERIODS = [
+    { key: "lastday", label: "Last Day" },
+    { key: "month", label: "This Month" },
+    { key: "lastmonth", label: "Last Month" },
+    { key: "all", label: "All Time" },
+  ];
+
+  return (
+    <div>
+      <div style={M.header}><BackBtn onBack={onBack} /><div style={{ fontSize: "1.4rem", fontWeight: 900, marginTop: 8 }}>All Stats</div></div>
+      <div style={{ padding: "0 12px" }}>
+        <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
+          {PERIODS.map(p => (
+            <button key={p.key} onClick={() => setPeriod(p.key)} style={{ ...M.btnSm, fontSize: "0.72rem", padding: "6px 12px", background: period === p.key ? "rgba(74,222,128,0.2)" : "rgba(255,255,255,0.04)", color: period === p.key ? "#4ade80" : "#555", border: `1px solid ${period === p.key ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.08)"}` }}>{p.label}</button>
+          ))}
+        </div>
+
+        {loading ? (
+          <div style={{ color: "#444", textAlign: "center", padding: "60px 0" }}>Loading…</div>
+        ) : normalized.length === 0 ? (
+          <div style={{ color: "#444", textAlign: "center", padding: "60px 0" }}>No rounds in this period.</div>
+        ) : (
+          <>
+            <div style={{ color: "#444", fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 12 }}>
+              Aggregate · {normalized.length} round{normalized.length !== 1 ? "s" : ""}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 20 }}>
+              <StatBox val={fmtAvgOver(overallAvgOverPar)} label="Avg +/- Per Hole" />
+              <StatBox val={overallGirPct !== null ? `${overallGirPct}%` : "—"} label="GIR %" />
+              <StatBox val={overallScramble !== null ? `${overallScramble}%` : "—"} label="Scramble %" accent="#4ade80" />
+              <StatBox val={overallBirdieConv !== null ? `${overallBirdieConv}%` : "—"} label="Birdie Conv %" accent="#facc15" />
+              <StatBox val={overallBlowupPct !== null ? `${overallBlowupPct}%` : "—"} label="Blow-up %" accent="#f87171" />
+              <StatBox val={overallBirdies} label="Total Birdies" accent="#facc15" />
+              <StatBox val={overallAvgPutts ?? "—"} label="Avg Putts/Hole" />
+              <StatBox val={puttsPerGIR ?? "—"} label="Putts/GIR" />
+            </div>
+
+            <div style={{ color: "#444", fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 12 }}>Hole Averages (Original 9)</div>
+            <div style={{ overflowX: "auto", marginBottom: 24 }}>
+              <table style={{ borderCollapse: "collapse", fontSize: "0.78rem", minWidth: "100%" }}>
+                <thead><tr><th style={M.th}>H</th>{Array.from({length: 9}, (_, i) => <th key={i} style={M.th}>{i + 1}</th>)}</tr></thead>
+                <tbody>
+                  <tr><td style={M.td}>+/-</td>{holeScoreAvgs.map((a, i) => <td key={i} style={{ ...M.td, color: holeAvgColor(a), fontWeight: 600 }}>{a !== null ? fmtAvgOver(a - PAR) : "—"}</td>)}</tr>
+                  <tr><td style={M.td}>GIR%</td>{holeGirPcts.map((g, i) => <td key={i} style={{ ...M.td, color: g !== null ? (g >= 50 ? "#4ade80" : g >= 25 ? "#fb923c" : "#f87171") : "#555", fontWeight: 600 }}>{g !== null ? `${g}%` : "—"}</td>)}</tr>
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -2842,6 +3274,7 @@ export default function App() {
       {mode === "standard" && <StandardApp players={players} onHome={() => setMode(null)} />}
       {mode === "practice" && <PracticeApp players={players} onHome={() => setMode(null)} />}
       {mode === "friday" && <FridayApp onHome={() => setMode(null)} />}
+      {mode === "allstats" && <AllStats onBack={() => setMode(null)} />}
       {mode === "feedback" && <BugReporter onBack={() => setMode(null)} />}
       {mode === "admin" && <AdminPanel players={players} onPlayersChange={refreshPlayers} onHome={() => setMode(null)} />}
     </div>
